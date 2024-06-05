@@ -1,0 +1,4 @@
+# ignore the zip file and the archive file that holds the dataset 
+
+*.zip
+archive/
