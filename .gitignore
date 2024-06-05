@@ -1,4 +1,6 @@
 # ignore the zip file and the archive file that holds the dataset 
 
 *.zip
-archive/
+deepglobe-land-cover-classification-dataset/
+water/
+no_water/
