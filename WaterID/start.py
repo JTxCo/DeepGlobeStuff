@@ -14,9 +14,11 @@ from torch.utils.data import DataLoader
 import albumentations as album
 import segmentation_models_pytorch as smp
 from torchmetrics import JaccardIndex
+import gc
 
 warnings.filterwarnings("ignore")
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 
@@ -62,11 +64,14 @@ class LandCoverDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, i):
         image = cv2.cvtColor(cv2.imread(self.image_paths[i]), cv2.COLOR_BGR2RGB)
-        mask = cv2.imread(self.mask_paths[i], cv2.IMREAD_GRAYSCALE)  # Reading mask as grayscale
         
-        # Ensure mask values are binary (0 or 1)
-        mask = (mask > 127).astype(np.float32)  # Assuming original mask values are 0 and 255
+        # Read the mask image as RGB and convert to same format as image
+        mask = cv2.imread(self.mask_paths[i], cv2.IMREAD_GRAYSCALE)
+        mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
 
+        # Ensure mask values are binary (0 or 1)
+        mask = (mask > 127).astype(np.float32)
+        
         # Debug prints
         print(f"Image shape: {image.shape}")
         print(f"Mask shape: {mask.shape}")
@@ -74,7 +79,9 @@ class LandCoverDataset(torch.utils.data.Dataset):
         if self.augmentation:
             try:
                 sample = self.augmentation(image=image, mask=mask)
+                
                 image, mask = sample['image'], sample['mask']
+
             except Exception as e:
                 print(f"Augmentation error for index {i}: {e}")
                 raise e
@@ -82,11 +89,13 @@ class LandCoverDataset(torch.utils.data.Dataset):
         if self.preprocessing:
             sample = self.preprocessing(image=image, mask=mask)
             image, mask = sample['image'], sample['mask']
-        
+
+        print(f"Preprocessed Image shape: {image.shape}, Preprocessed Mask shape: {mask.shape}")  # Added check
         return image, mask
 
     def __len__(self):
         return len(self.image_paths)
+
     
 def get_training_augmentation():
     train_transform = [
@@ -131,6 +140,7 @@ def get_preprocessing(preprocessing_fn=None):
         
     return album.Compose(_transform)
 
+
 augmented_dataset = LandCoverDataset(
     train_df, 
     augmentation=get_training_augmentation(),
@@ -139,17 +149,16 @@ augmented_dataset = LandCoverDataset(
 random_idx = random.randint(0, len(augmented_dataset)-1)
 
 print("finished augmentation")
-
 ENCODER = 'resnet50'
 ENCODER_WEIGHTS = None
-CLASSES = class_names
+CLASSES = class_names  # Ensure this corresponds to your mask channels
 ACTIVATION = 'sigmoid'  # could be None for logits or 'softmax2d' for multiclass segmentation
 
-# Create segmentation model with pretrained encoder
+# Ensure your model outputs a single channel for binary classification
 model = smp.DeepLabV3Plus(
     encoder_name=ENCODER, 
     encoder_weights=ENCODER_WEIGHTS, 
-    classes=len(CLASSES), 
+    classes=1,  # This should be 1 for binary segmentation
     activation=ACTIVATION,
 )
 
@@ -163,20 +172,20 @@ else:
 
 # Get train and val dataset instances
 train_dataset = LandCoverDataset(
-    train_df, 
+    train_df,
     augmentation=get_training_augmentation(),
     preprocessing=get_preprocessing(preprocessing_fn),
 )
 
 valid_dataset = LandCoverDataset(
-    valid_df, 
+    valid_df,
     augmentation=get_validation_augmentation(),
     preprocessing=get_preprocessing(preprocessing_fn),
 )
 
 # Get train and val data loaders
-train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=0)
-valid_loader = DataLoader(valid_dataset, batch_size=1, shuffle=False, num_workers=0)
+train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+valid_loader = DataLoader(valid_dataset, batch_size=1, shuffle=False)
 
 # Set flag to train the model or not. If set to 'False', only prediction is performed (using an older model checkpoint)
 TRAINING = True
@@ -184,8 +193,6 @@ TRAINING = True
 # Set num of epochs
 EPOCHS = 5
 
-# Set device: `cuda` or `cpu`
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Define loss function
 from segmentation_models_pytorch.losses import DiceLoss
@@ -193,14 +200,14 @@ from segmentation_models_pytorch.losses import DiceLoss
 loss = DiceLoss(mode='binary')
 
 # Define metrics using torchmetrics
-iou_metric = JaccardIndex(task="binary", num_classes=2, threshold=0.5).to(DEVICE)  # Binary segmentation
+iou_metric = JaccardIndex(task="binary", num_classes=2, threshold=0.5).to(DEVICE)
 
 # Define optimizer
-optimizer = torch.optim.Adam([ 
+optimizer = torch.optim.Adam([
     dict(params=model.parameters(), lr=0.00008),
 ])
 
-# Define learning rate scheduler (not used in this NB)
+# Define learning rate scheduler (not used in this example)
 lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
     optimizer, T_0=1, T_mult=2, eta_min=5e-5,
 )
@@ -210,20 +217,47 @@ if os.path.exists('../input/deepglobe-land-cover-classification-deeplabv3/best_m
     model = torch.load('../input/deepglobe-land-cover-classification-deeplabv3/best_model.pth', map_location=DEVICE)
     print('Loaded pre-trained DeepLabV3+ model!')
 
-# Training and validation loop
+def debug_memory():
+    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.3f} GB")
+    print(f"Cached: {torch.cuda.memory_reserved() / 1024**3:.3f} GB")
+
 def train_one_epoch(epoch_index, train_loader, model, optimizer, loss_fn, device):
     model.train()
     train_loss = 0.0
+    
     for batch in train_loader:
         images, masks = batch
         images = images.to(device)
         masks = masks.to(device)
+        print("Loss: ", train_loss)    
         optimizer.zero_grad()
-        outputs = model(images)
-        loss = loss_fn(outputs, masks)
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.item()
+        
+        # getting seg fault here
+        try:
+            # Debug prints before the error occurrence
+            print("Before model prediction")
+            print("Images shape: ", images.shape)
+            print("Masks shape: ", masks.shape)
+            debug_memory()  # Check memory usage before model prediction
+
+            outputs = model(images)  # Likely causing the segmentation fault
+            print(f"Output shape: {outputs.shape}, Target shape: {masks.shape}")
+            
+            loss = loss_fn(outputs, masks)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+
+            debug_memory()  # Check memory usage after backpropagation
+        except RuntimeError as e:
+            print(f"Runtime error: {e}")
+            torch.cuda.empty_cache()  # Clear cache
+            gc.collect()  # Run garbage collector
+            raise e
+        except Exception as e:  # Corrected generic exception handling
+            print(f"Error during training: {e}")
+            raise e
+    
     return train_loss / len(train_loader)
 
 def validate_one_epoch(valid_loader, model, loss_fn, metric_fn, device):
@@ -235,10 +269,16 @@ def validate_one_epoch(valid_loader, model, loss_fn, metric_fn, device):
             images, masks = batch
             images = images.to(device)
             masks = masks.to(device)
-            outputs = model(images)
-            loss = loss_fn(outputs, masks)
-            valid_loss += loss.item()
-            metric_fn.update(outputs, masks.type(torch.int32))
+            try:
+                outputs = model(images)
+                loss = loss_fn(outputs, masks)
+                valid_loss += loss.item()
+                metric_fn.update(outputs, masks.type(torch.int32))
+            except RuntimeError as e:
+                print(f"Runtime error: {e}")
+                torch.cuda.empty_cache()
+                gc.collect()
+                raise e
     return valid_loss / len(valid_loader), metric_fn.compute().item()
 
 print("Starting training")
@@ -267,15 +307,16 @@ if TRAINING:
     end_time = time.time()  # End timing
     elapsed_time = end_time - start_time
     print(f"Elapsed time: {elapsed_time // 60:.0f} minutes, {elapsed_time % 60:.2f} seconds")
-    
+
 # Load best saved model checkpoint from the current run
 if os.path.exists('./best_model.pth'):
     best_model = torch.load('./best_model.pth', map_location=DEVICE)
     print('Loaded DeepLabV3+ model from this run.')
 
+
 # Create test dataloader to be used with DeepLabV3+ model (with preprocessing operation: to_tensor(...))
 test_dataset = LandCoverDataset(
-    valid_df, 
+    valid_df,
     augmentation=get_validation_augmentation(),
     preprocessing=get_preprocessing(preprocessing_fn),
 )
@@ -295,7 +336,7 @@ image, mask = test_dataset_vis[random_idx]
 sample_preds_folder = 'sample_predictions/'
 if not os.path.exists(sample_preds_folder):
     os.makedirs(sample_preds_folder)
-    
+
 # Updated prediction loop for binary segmentation
 for idx in range(len(test_dataset)):
 
