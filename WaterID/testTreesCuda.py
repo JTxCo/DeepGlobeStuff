@@ -1,5 +1,5 @@
 import glob
-import numpy as np
+import cupy as np
 import cv2
 from skimage import io
 from sklearn.ensemble import RandomForestClassifier
