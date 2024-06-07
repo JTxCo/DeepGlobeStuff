@@ -29,6 +29,8 @@ def load_data_in_batches(paths, batch_size=10):
     masks = []
     for i in range(0, len(paths), batch_size):
         batch_paths = paths[i:i + batch_size]
+        print(f"Loading batch {i // batch_size + 1}/{(len(paths) + batch_size - 1) // batch_size}")
+
         with ThreadPoolExecutor() as executor:
             results = list(executor.map(load_image_and_mask, batch_paths))
         for image, mask in results:
@@ -69,6 +71,8 @@ def extract_features_in_batches(images, batch_size=5):
     all_features = []
     for i in range(0, len(images), batch_size):
         batch_images = images[i:i + batch_size]
+        print(f"Extracting features from batch {i // batch_size + 1}/{(len(images) + batch_size - 1) // batch_size}")
+
         with ThreadPoolExecutor() as executor:
             result_batches = list(executor.map(extract_single_image_features, batch_images))
         for batch in result_batches:
