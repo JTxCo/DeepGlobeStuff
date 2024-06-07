@@ -13,45 +13,46 @@ no_water_image_path = 'no_water/*.tif'
 water_mask_path = 'water/*.png'
 no_water_mask_path = 'no_water/*.png'
 
-# Function to load all images and masks from directories
+# Function to load image and mask
 def load_image_and_mask(paths):
     image_path, mask_path = paths
+    # Read the image (TIFF)
     image = io.imread(image_path)
+    # Read the mask (PNG) and binarize it
     mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
     mask = (mask > 127).astype(int)  # Convert to binary labels (0 and 1)
     return image, mask
 
+# Load data in batches
+def load_data_in_batches(paths, batch_size=10):
+    images = []
+    masks = []
+    for i in range(0, len(paths), batch_size):
+        batch_paths = paths[i:i + batch_size]
+        with ThreadPoolExecutor() as executor:
+            results = list(executor.map(load_image_and_mask, batch_paths))
+        for image, mask in results:
+            images.append(image)
+            masks.append(mask)
+    return images, masks
+
 # Get all file paths
-water_image_files = glob.glob(water_image_path)
-no_water_image_files = glob.glob(no_water_image_path)
-water_mask_files = glob.glob(water_mask_path)
-no_water_mask_files = glob.glob(no_water_mask_path)
+water_image_files = glob.glob(water_image_path)[:10]
+no_water_image_files = glob.glob(no_water_image_path)[:5]
+water_mask_files = glob.glob(water_mask_path)[:10]
+no_water_mask_files = glob.glob(no_water_mask_path)[:5]
 
 print("Got all file paths")
 
-# Load all data using ThreadPoolExecutor
+# Combine water and no_water file paths
 all_image_mask_paths = list(zip(water_image_files, water_mask_files)) + list(zip(no_water_image_files, no_water_mask_files))
 
-def load_data_in_parallel(paths):
-    images, masks = [], []
-    with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(load_image_and_mask, path) for path in paths]
-        for future in as_completed(futures):
-            img, msk = future.result()
-            images.append(img)
-            masks.append(msk)
-    return images, masks
-
-print("Loading data in parallel")
-water_images, water_masks = load_data_in_parallel(zip(water_image_files, water_mask_files))
-no_water_images, no_water_masks = load_data_in_parallel(zip(no_water_image_files, no_water_mask_files))
+print("Loading data in batches")
+# Load data in batches
+images, masks = load_data_in_batches(all_image_mask_paths, batch_size=5)
 print("Loaded all data")
 
-# Combine the data
-all_images = water_images + no_water_images
-all_masks = water_masks + no_water_masks
-
-# Function to extract features from each image
+# Define function to extract features from a single image
 def extract_single_image_features(image):
     features = []
     h, w, c = image.shape
@@ -63,18 +64,21 @@ def extract_single_image_features(image):
             features.append(feature)
     return features
 
-def extract_features_in_parallel(images):
-    features = []
-    with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(extract_single_image_features, img) for img in images]
-        for future in as_completed(futures):
-            features.extend(future.result())
-    return np.array(features)
+# Extract features in batches
+def extract_features_in_batches(images, batch_size=5):
+    all_features = []
+    for i in range(0, len(images), batch_size):
+        batch_images = images[i:i + batch_size]
+        with ThreadPoolExecutor() as executor:
+            result_batches = list(executor.map(extract_single_image_features, batch_images))
+        for batch in result_batches:
+            all_features.extend(batch)
+    return np.array(all_features)
 
-print("Extracting features in parallel")
+print("Extracting features in batches")
 # Extract features and flatten masks
-all_features = extract_features_in_parallel(all_images)
-all_labels = np.array([label for mask in all_masks for label in mask.flatten()])
+all_features = extract_features_in_batches(images)
+all_labels = np.array([label for mask in masks for label in mask.flatten()])
 print("Extracted features")
 
 # Split data into training and testing sets
