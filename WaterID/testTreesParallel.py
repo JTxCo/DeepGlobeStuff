@@ -91,7 +91,7 @@ X_train, X_test, y_train, y_test = train_test_split(all_features, all_labels, te
 print("Split data into training and testing sets")
 print("Training the model")
 # Create and train the random forest classifier
-clf = RandomForestClassifier(n_estimators=100, random_state=42)
+clf = RandomForestClassifier(n_estimators=10, random_state=42)
 clf.fit(X_train, y_train)
 print("Trained the model")
 
